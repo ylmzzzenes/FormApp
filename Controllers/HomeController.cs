@@ -1,30 +1,53 @@
 ﻿using FormsApp.Models;
+using FormsApp.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.Win32.SafeHandles;
-using System.IO;
 
 
 namespace FormsApp.Controllers
 {
     public class HomeController : Controller
     {
-        private SafeFileHandle path;
-
-        public HomeController() { }
-        public IActionResult Index(string searchString, string category)
+        private readonly IImageStorage _imageStore;
+        
+        public HomeController(IImageStorage imageStore)
+        {
+            _imageStore = imageStore;
+        }
+       
+        public IActionResult Index(string? searchString, string? category)
         {
             var products = Repository.Products;
+            var categories = Repository.Categories;
+            searchString = searchString?.Trim();
 
-            if (!String.IsNullOrEmpty(searchString))
+            if (!string.IsNullOrWhiteSpace(searchString))
             {
                 ViewBag.SearchString = searchString;
-                products = products.Where(p => p.Name!.ToLower().Contains(searchString)).ToList();
+                products = products.Where(p => p.Name is not null && p.Name.Contains(searchString, StringComparison.OrdinalIgnoreCase)).ToList();
             }
-            if (!string.IsNullOrEmpty(category) && category != "0")
+            if (!string.IsNullOrWhiteSpace(category))
             {
-                products = products.Where(p => p.CategoryId == int.Parse(category)).ToList();
+                if(!int.TryParse(category,  out var categoryId) || categoryId < 0)
+                {
+                    return BadRequest("Geçersiz kategori seçimi.");
+                }
+
+                if( categoryId > 0)
+                {
+                    var categoryExists = categories.Any(c => c.CategoryId == categoryId);
+
+                    if (!categoryExists)
+                    {
+                        return NotFound("Kategori bulunamadı.");
+                    }
+
+                    products = products.Where(p => p.CategoryId == categoryId).ToList();
+                }
+                category = categoryId.ToString();
             }
+           
             //ViewBag.Categories = new SelectList(Repository.Categories,"CategoryId","Name",category);
 
             var model = new ProductViewModel
@@ -45,37 +68,27 @@ namespace FormsApp.Controllers
         [HttpPost]
         public async Task<IActionResult> Create(Product model, IFormFile imageFile)
         {
-
-            var extension = "";
-            if (imageFile != null)
-            {
-                var allowedExtensions = new[] { ".jpg", ".jpeg", ".png" };
-                extension = Path.GetExtension(imageFile.FileName);
-                if (!allowedExtensions.Contains(extension))
-                {
-                    ModelState.AddModelError("", "Geçerli bir resim seçiniz");
-                }
-            }
-            if (ModelState.IsValid)
-            {
-                var randomFileName = string.Format($"{Guid.NewGuid().ToString()}{extension}");
-                var path = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot/images", randomFileName);
-                if (imageFile != null)
-                {
-                    using (var stream = new FileStream(path, FileMode.Create))
-                    {
-                        await imageFile.CopyToAsync(stream);
-                    }
-                    model.Image = randomFileName;
-                    model.ProductId = Repository.Products.Count + 1;
-                    Repository.CreateProduct(model);
-                    return RedirectToAction("Index");
-                }
-
-            }
             ViewBag.Categories = new SelectList(Repository.Categories, "CategoryId", "Name");
 
-            return View(model);
+            if (!ModelState.IsValid)
+            {
+                return View(model);
+            }
+
+            var uploadResult = await _imageStore.SaveAsync(imageFile);
+            if (!uploadResult.IsSuccess)
+            {
+                ModelState.AddModelError("imageFile", uploadResult.ErrorMessage ?? "Resim Yüklenemedi");
+               
+
+                return View(model);
+            }
+
+            Repository.CreateProduct(model);
+            model.Image = uploadResult.FileName;
+            model.ProductId = Repository.Products.Count;
+            return RedirectToAction(nameof(Index));
+
         }
 
         public IActionResult Edit(int? id)
@@ -100,29 +113,30 @@ namespace FormsApp.Controllers
             {
                 return NotFound();
             }
-            if (ModelState.IsValid)
+            var product = Repository.Products.FirstOrDefault(p=> p.ProductId ==id)?.Image;
+
+            if(product == null) return NotFound();
+
+            model.Image = product;
+            ViewBag.Categories = new SelectList(Repository.Categories, "CategoryId", "Name");
+
+            if (!ModelState.IsValid)
             {
-
-                if (imageFile != null)
-                {
-                    var extension = Path.GetExtension(imageFile.FileName);
-                    var randomFileName = string.Format($"{Guid.NewGuid().ToString()}{extension}");
-                    var path = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot/images", randomFileName);
-
-                    using (var stream = new FileStream(path, FileMode.Create))
-                    {
-                        await imageFile.CopyToAsync(stream);
-                    }
-                    model.Image = randomFileName;
-                }
-                Repository.EditProduct(model);
-                return RedirectToAction("Index");
-
-
+                return View(model);
             }
 
-            ViewBag.Categories = new SelectList(Repository.Categories, "CategoryId", "Name");
-            return View(model);
+            if (imageFile != null)
+            {
+                var uploadResullt = await _imageStore.SaveAsync(imageFile);
+                if (!uploadResullt.IsSuccess)
+                {
+                    ModelState.AddModelError("imageFile", uploadResullt.ErrorMessage ?? "Resim Yüklenemedi");
+                    return View(model);
+                }
+                model.Image = uploadResullt.FileName;
+            }
+           
+            return RedirectToAction(nameof(Index));
         }
 
         public IActionResult Delete(int? id)

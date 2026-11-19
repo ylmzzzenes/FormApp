@@ -1,6 +1,9 @@
+using FormsApp.Services;
+
 var builder = WebApplication.CreateBuilder(args);
 
 
+builder.Services.AddScoped<IImageStorage, LocalImageStorage>();
 builder.Services.AddControllersWithViews();
 var app = builder.Build();
 
